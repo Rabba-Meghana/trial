@@ -1,0 +1,72 @@
+// Copyright (c) 2021, Moticon ReGo AG
+// All rights reserved.
+// 
+// Any redistribution in source or binary forms, with or without modification,
+// is not permitted.
+// 
+// THIS SOFTWARE IS PROVIDED BY MOTICON REGO AG "AS IS" AND ANY EXPRESS OR
+// IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+// MERCHANTABILITY, NONINFRINGEMENT, AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL MOTICON REGO AG OR CONTRIBUTORS BE LIABLE FOR
+// ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+
+syntax = "proto2";
+package moticon_insole3.proto.insole;
+import "common.proto";
+
+message InsoleMessage {
+
+    oneof msg {
+        InsoleInfoReq insole_info_req = 2;
+        MoticonInsoleInfo moticon_insole_info = 3;
+        Zeroing zeroing = 9;
+        ZeroingConf zeroing_conf = 10;
+        DataMessage data_message = 12;
+        InsoleStartService start_service = 13;        InsoleStartServiceConf start_service_conf = 14;
+        InsoleStopService stop_service = 15;
+        InsoleStopServiceConf stop_service_conf = 16;
+        ServiceInfoReq service_info_req = 21;
+        ServiceInfo service_info = 22;
+    }
+}
+
+message MoticonInsoleInfo {
+    optional InsoleInfoType type = 1;
+    optional InsoleStatus insole_status = 2;
+    optional InsoleState insole_state = 3;
+    optional InsoleSettings insole_settings = 4;
+    optional SensorCoordinates sensor_coordinates = 5;
+}
+
+message ServiceInfoReq {
+    optional ServiceType queried_service_type = 1;
+}
+
+message ServiceInfo {
+    optional ServiceType queried_service_type = 1;
+    repeated ServiceConfig service_config = 2;
+}
+
+message InsoleInfoReq {
+    optional InsoleInfoType type = 1;
+}
+
+message InsoleStartService {
+    optional ServiceConfig service_config = 1;
+    optional MeasurementInfo measurement_info = 2;
+}
+
+message InsoleStopService {
+    optional uint32 service_counter = 1;
+}
+
+message InsoleStopServiceConf {
+    optional Error error = 1;
+}
