@@ -1,80 +1,72 @@
 # Liquidity Zero
 
-Liquidity Zero is a directly integratable settlement-capacity exchange runtime and SDK. It provides tenant-scoped financial infrastructure for participant onboarding, risk and collateral limits, obligation netting, a settlement-capacity order book, deterministic matching, constrained liquidity routing, idempotent transfers, reconciliation, and signed webhooks.
+Liquidity Zero is a directly integratable settlement-capacity exchange runtime and SDK. It provides tenant-scoped infrastructure for participant onboarding, collateral and credit controls, obligation netting, settlement-capacity matching, idempotent transfers, reconciliation, auditability, and signed event delivery.
 
-The current release is a real sandbox integration runtime. It does not claim live connectivity to FedNow, RTP, ACH operators, SWIFT, banks, custodians, or regulated liquidity providers. Production rail adapters require actual provider credentials, legal agreements, security review, and the appropriate regulatory structure.
+Current release: **v0.3.0**.
 
-## What is real
+This repository is a real sandbox integration runtime. It does **not** claim live connectivity to FedNow, RTP, ACH operators, SWIFT, banks, custodians, or regulated liquidity providers. Production rail adapters require actual credentials, contractual access, security review, and the appropriate legal/regulatory structure.
 
-- Monetary values use integer minor units; binary floating-point is forbidden in the financial domain.
-- Journal entries must balance independently per currency or creation fails.
-- Obligation netting conserves value per currency and rejects duplicate obligation identifiers.
-- Capacity orders support partial fills, price-time priority, settlement windows, and self-trade prevention.
-- PostgreSQL market clearing locks open order rows before decrementing capacity.
-- Tenant API keys are generated as `lz_live_*`, bound to one organization, and SHA-256 hashed at rest.
-- Transfers are idempotent per organization.
-- Transfer execution enforces participant ownership, configured credit/collateral capacity, and single-transfer limits.
-- Reconciliation records independently compare expected and observed amounts.
-- Outbound webhooks are HMAC-SHA256 signed with timestamp replay protection support.
-- The Docker image applies idempotent schema migrations before starting the API.
-- A Python SDK ships in the same package.
-- CI gates package installation, Ruff, strict mypy, PostgreSQL-backed tests, and the production Docker build.
+## What is implemented
+
+- Integer minor-unit monetary representation; binary floating point is forbidden in financial-domain amounts.
+- Per-currency double-entry conservation rules.
+- Multilateral obligation netting with value conservation.
+- Settlement-capacity order book with partial fills, price-time priority, settlement windows, and self-trade prevention.
+- PostgreSQL row locking for market clearing.
+- Tenant API keys generated as `lz_live_*`, SHA-256 hashed at rest, organization-bound, rotatable, and revocable.
+- Participant-specific collateral, credit, reservation, and single-transfer limits.
+- Atomic settlement-capacity reservation using `SELECT ... FOR UPDATE` before transfer execution.
+- Explicit transfer lifecycle including `reserved`, provider-accepted state, `settled`, and `failed`.
+- Capacity release on provider failure or settlement.
+- Idempotent transfer handling per organization.
+- Reconciliation of expected versus observed amounts.
+- Append-only audit events for sensitive financial and configuration operations.
+- Durable webhook outbox using `FOR UPDATE SKIP LOCKED`, exponential retry, and dead-letter state.
+- Dedicated outbox worker service.
+- HMAC-SHA256 signed webhooks with timestamp replay protection.
+- Python SDK.
+- TypeScript SDK with webhook verification helper.
+- Connector certification tests for future rail/provider adapters.
+- Idempotent schema migrations.
+- Docker API, PostgreSQL, and worker deployment.
+- Six independent CI gates: package, Ruff, strict mypy, PostgreSQL tests, TypeScript build/typecheck, and Docker build.
 
 ## Quick start
-
-Start PostgreSQL and the API:
 
 ```bash
 docker compose up --build
 ```
 
-The service listens on `http://localhost:8080`.
+API: `http://localhost:8080`
 
 - Health: `GET /healthz`
-- OpenAPI JSON: `GET /openapi.json`
-- Interactive API docs: `GET /docs`
+- OpenAPI: `GET /openapi.json`
+- Interactive docs: `GET /docs`
 
-## Provision a fintech tenant
+## Provision a tenant
 
-The service has an operator/admin key configured through `LZ_API_KEY`. In development, create a tenant with the CLI:
+The operator secret is supplied through `LZ_API_KEY`.
 
 ```bash
 python -m lz.provision acme-fintech "Acme Fintech"
 ```
 
-The command prints a tenant API key once:
-
-```text
-lz_live_...
-```
-
-Only the SHA-256 hash is stored in PostgreSQL. Treat the raw key as a secret.
-
-An operator can also provision a tenant through:
+Or:
 
 ```http
 POST /v1/admin/organizations
 X-API-Key: <operator-key>
-```
+Content-Type: application/json
 
-```json
 {
   "id": "acme-fintech",
   "name": "Acme Fintech"
 }
 ```
 
-The response contains the newly generated tenant key once.
+The raw tenant API key is returned once. Only its SHA-256 hash is stored.
 
-## Python SDK integration
-
-Install the package from the repository/build artifact:
-
-```bash
-pip install .
-```
-
-Then initialize the client using the `lz` import namespace:
+## Python SDK
 
 ```python
 from lz import LiquidityZeroClient
@@ -82,22 +74,14 @@ from lz import LiquidityZeroClient
 lz = LiquidityZeroClient(
     api_key="lz_live_...",
     organization_id="acme-fintech",
-    base_url="https://your-liquidity-zero-host.example",
+    base_url="https://api.example.com",
 )
-```
 
-### 1. Onboard a participant
-
-```python
 participant = lz.create_participant(
     external_id="merchant_123",
     legal_name="Example Merchant LLC",
 )
-```
 
-### 2. Configure settlement capacity controls
-
-```python
 lz.set_risk_limit(
     participant_id=participant["id"],
     currency="USD",
@@ -105,13 +89,7 @@ lz.set_risk_limit(
     collateral_minor=2_000_000,
     max_single_transfer_minor=1_000_000,
 )
-```
 
-All values are integer minor units. For USD, `100` means `$1.00`.
-
-### 3. Submit an idempotent transfer
-
-```python
 transfer = lz.create_transfer(
     participant_id=participant["id"],
     amount_minor=250_000,
@@ -122,121 +100,102 @@ transfer = lz.create_transfer(
 )
 ```
 
-Submitting the same organization + idempotency key again returns the same stored transfer instead of creating a second one.
+All monetary values are integer minor units. For USD, `100` means `$1.00`.
 
-The current connector is `sandbox`; the response never pretends real funds moved.
+The current transfer connector identifies itself as `sandbox`; no response claims real funds moved.
 
-### 4. Record obligations and calculate net positions
+## TypeScript SDK
 
-```python
-from datetime import UTC, datetime
+The TypeScript SDK lives under `sdk/typescript` and is built as `@liquidity-zero/sdk`.
 
-lz.create_obligation(
-    payer="merchant_123",
-    payee="merchant_456",
-    currency="USD",
-    amount_minor=500_000,
-    due_at=datetime.now(UTC),
-    idempotency_key="obligation_000001",
-)
+```ts
+import { LiquidityZeroClient, verifyWebhook } from "@liquidity-zero/sdk";
 
-positions = lz.netting("USD")
+const lz = new LiquidityZeroClient({
+  apiKey: "lz_live_...",
+  organizationId: "acme-fintech",
+  baseUrl: "https://api.example.com",
+});
+
+const participant = await lz.createParticipant({
+  external_id: "merchant_123",
+  legal_name: "Example Merchant LLC",
+});
 ```
 
-### 5. Submit settlement-capacity orders
+## Atomic capacity reservation
 
-```python
-from datetime import UTC, datetime, timedelta
+A transfer does not merely check capacity. The API locks the participant/currency risk row and reserves capacity inside the database transaction.
 
-start = datetime.now(UTC)
+```text
+available = credit_limit + collateral - reserved
 
-lz.create_capacity_order(
-    participant="merchant_123",
-    side="buy",
-    currency="USD",
-    amount_minor=1_000_000,
-    price_bps=25,
-    window_start=start,
-    window_end=start + timedelta(hours=1),
-    idempotency_key="capacity_000001",
-)
+requested <= max_single_transfer
+requested <= available
 ```
 
-Market clearing is an operator-only action:
+If valid:
+
+```text
+lock risk row
+  -> increment reserved
+  -> persist transfer intent
+  -> commit reservation
+  -> submit to connector
+  -> persist provider state
+  -> enqueue event
+```
+
+If connector submission fails, the reservation is released and the transfer is marked failed. When settlement is finalized, the reservation is released atomically.
+
+The test suite includes a concurrent race where two 700-unit transfers compete against only 1,000 units of capacity. Exactly one succeeds and the other is rejected.
+
+## API-key lifecycle
+
+Rotate the current tenant key:
 
 ```http
-POST /v1/admin/capacity/clear/USD
+POST /v1/api-keys/rotate
+X-API-Key: <current-tenant-key>
+```
+
+The previous key is revoked as the new key is created.
+
+Operators can revoke a key explicitly:
+
+```http
+DELETE /v1/admin/organizations/{organization_id}/api-keys/{key_id}
 X-API-Key: <operator-key>
 ```
 
-This separation prevents customers from unilaterally triggering global clearing.
+## Webhooks and durable outbox
 
-### 6. Reconcile an external statement line
+Customer endpoints are registered with:
 
-```python
-result = lz.reconcile(
-    external_reference="bank-statement-line-82911",
-    currency="USD",
-    expected_minor=250_000,
-    observed_minor=249_900,
-)
-
-assert result["status"] == "mismatch"
-assert result["delta_minor"] == -100
+```http
+POST /v1/webhook-endpoints
 ```
 
-## Webhooks
-
-Register a customer endpoint:
-
-```python
-endpoint = lz.create_webhook_endpoint(
-    url="https://fintech.example.com/webhooks/liquidity-zero",
-    secret="replace-with-a-long-random-secret",
-)
-```
-
-Liquidity Zero emits events such as:
-
-- `transfer.accepted`
-- `reconciliation.matched`
-- `reconciliation.mismatch`
-- `integration.test`
-
-Outbound requests include:
+Events include transfer, reconciliation, API-key, and integration events. Webhooks use:
 
 ```text
-X-LZ-Timestamp: <unix-seconds>
+X-LZ-Timestamp
 X-LZ-Signature: v1=<hmac-sha256>
-X-LZ-Event-ID: evt_...
+X-LZ-Event-ID
 ```
 
-The signed message is:
+The signed input is:
 
 ```text
 <timestamp>.<raw-request-body>
 ```
 
-Verify using the exact raw body before JSON parsing:
+Webhook events are persisted before delivery. The worker claims pending events with `FOR UPDATE SKIP LOCKED`, retries failures with exponential backoff, and moves exhausted deliveries to `dead_letter`.
 
-```python
-from lz.security import verify_webhook
+`docker compose up --build` starts both the API and `outbox-worker`.
 
-valid = verify_webhook(
-    secret="replace-with-a-long-random-secret",
-    timestamp=int(request.headers["X-LZ-Timestamp"]),
-    payload=request.body,
-    signature=request.headers["X-LZ-Signature"],
-)
-```
+## Main customer API
 
-Webhook delivery currently retries synchronously up to three attempts. A durable outbox/queue with exponential backoff and dead-letter handling is a production-hardening item before high-volume deployment.
-
-## REST API surface
-
-Customer endpoints:
-
-- `GET /healthz`
 - `POST /v1/participants`
 - `PUT /v1/participants/{participant_id}/risk-limit`
 - `POST /v1/obligations`
@@ -247,44 +206,41 @@ Customer endpoints:
 - `POST /v1/reconciliation`
 - `POST /v1/webhook-endpoints`
 - `POST /v1/webhook-endpoints/{endpoint_id}/test`
+- `POST /v1/api-keys/rotate`
 
-Operator endpoints:
-
-- `POST /v1/admin/organizations`
-- `POST /v1/admin/capacity/clear/{currency}`
+Operator-only endpoints include tenant provisioning, global capacity clearing, transfer-settlement simulation, key revocation, and manual outbox delivery.
 
 ## Financial invariants
 
-For every journal entry and currency:
-
 ```text
-sum(postings) = 0
-```
-
-For every closed netting set and currency:
-
-```text
-sum(net_positions) = 0
-```
-
-For every market clearing operation:
-
-```text
+sum(journal postings per currency) = 0
+sum(net positions per closed currency set) = 0
 filled_amount(order) <= remaining_amount(order)
-```
-
-For every customer transfer:
-
-```text
-amount <= max_single_transfer
-amount <= credit_limit + collateral
+reserved_capacity >= 0
+reserved_capacity <= credit_limit + collateral
+transfer amount <= max_single_transfer
 ```
 
 These are execution constraints, not dashboard warnings.
 
-## Deployment configuration
+## CI verification
 
-Required environment variables for a non-development deployment:
+GitHub Actions independently runs:
+
+```text
+Python package build + compile
+Ruff
+mypy --strict
+PostgreSQL-backed pytest suite
+TypeScript SDK typecheck + build
+Docker production image build
+```
+
+The PostgreSQL suite includes idempotency, over-limit rejection, reservation release, API-key rotation, integration-contract coverage, connector certification, and concurrent capacity-race testing.
+
+## Production configuration
+
+At minimum:
 
 ```text
 LZ_ENVIRONMENT=production
@@ -294,57 +250,23 @@ LZ_WEBHOOK_TOLERANCE_SECONDS=300
 LZ_PUBLIC_BASE_URL=https://api.example.com
 ```
 
-Do not use the repository development secrets in production.
-
-The container starts with:
-
-```text
-python -m lz.migrate
-uvicorn lz.api:app ...
-```
-
-## Verification
-
-The GitHub CI pipeline independently runs:
-
-```bash
-pip install -e '.[dev]'
-python -m compileall -q lz tests
-ruff check lz tests
-mypy lz
-pytest tests
-docker build .
-```
-
-The integration contract test provisions a tenant, authenticates with the generated tenant key, creates a participant, sets settlement-capacity limits, verifies idempotent transfer behavior, rejects an over-limit transfer, and creates a reconciliation mismatch against PostgreSQL.
+Do not use repository development secrets in production.
 
 ## Production boundary
 
-This release is directly integratable for development, sandbox pilots, architecture evaluation, and fintech partner integration testing. It is not yet a regulated production money-movement network.
+v0.3 is suitable for sandbox pilots, architecture evaluation, partner integration testing, and development against the real API/SDK contract. It is not yet a regulated live-money network.
 
-Before enabling real funds, the system still requires at minimum:
+Before enabling real funds, the remaining external/organizational requirements include:
 
-- contracted bank/payment-network or regulated infrastructure partners
-- production rail adapters using real provider credentials
-- KYB/KYC/AML/sanctions integrations appropriate to the operating model
-- legally enforceable collateral and credit arrangements
-- a durable webhook/event outbox and worker fleet
-- API-key rotation/revocation and production KMS/HSM-backed secret management
-- granular RBAC for operator actions
-- independent bank/rail reconciliation and settlement-finality ingestion
-- rate limiting, WAF controls, audit retention, alerting, and incident runbooks
-- penetration testing and dependency/security scanning
-- legal and regulatory review for each jurisdiction and product role
+- a contracted bank, BaaS, payment-network, or regulated stablecoin/settlement provider
+- certified production adapters using actual provider credentials
+- KYB/KYC/AML/sanctions controls appropriate to the operating model
+- legally enforceable collateral/credit arrangements
+- production KMS/HSM-backed secret management
+- granular operator RBAC and approval policies
+- independent settlement-finality ingestion and bank/rail reconciliation
+- production rate limiting, WAF, monitoring, alerting, and incident runbooks
+- penetration testing and security review
+- jurisdiction-specific legal and regulatory analysis
 
-The repository deliberately keeps those boundaries explicit instead of simulating regulated connectivity.
-
-## Development
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
-pytest
-ruff check lz tests
-mypy lz
-```
+The repository deliberately keeps this boundary explicit rather than fabricating regulated connectivity.
