@@ -79,6 +79,20 @@ jobs:
       - name: Pytest
         run: pytest tests
 
+  typescript-sdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDK dependencies
+        run: npm install
+      - name: Typecheck SDK
+        run: npm run typecheck
+      - name: Build SDK
+        run: npm run build
+
   docker:
     runs-on: ubuntu-latest
     steps:
