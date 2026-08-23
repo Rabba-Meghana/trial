@@ -28,6 +28,9 @@ dev = [
   "httpx>=0.28,<1",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["lz"]
+
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers --disable-warnings --cov=lz --cov-report=term-missing"
 testpaths = ["tests"]
