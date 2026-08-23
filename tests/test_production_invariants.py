@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -83,6 +84,24 @@ def test_capacity_is_reserved_and_cannot_be_double_spent() -> None:
     )
     assert second.status_code == 409
     assert second.json()["detail"] == "available settlement capacity exceeded"
+
+
+def test_concurrent_transfers_cannot_double_spend_capacity() -> None:
+    client, _, headers = _tenant()
+    participant_id = _participant_with_limit(client, headers, total_capacity=1_000)
+
+    def submit() -> int:
+        response = client.post(
+            "/v1/transfers",
+            headers=headers,
+            json=_transfer_payload(participant_id, 700, f"idem-{uuid4().hex}"),
+        )
+        return response.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = sorted(pool.map(lambda _: submit(), range(2)))
+
+    assert statuses == [201, 409]
 
 
 def test_idempotent_retry_does_not_reserve_twice() -> None:
