@@ -1,25 +1,39 @@
 from __future__ import annotations
 
-import secrets
+import json
 from datetime import datetime
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, HTTPException, status
+from pydantic import AnyHttpUrl, BaseModel, Field
 from sqlalchemy import select
 
-from .config import settings
-from .db import CapacityOrderRow, ObligationRow, SessionLocal, init_db
+from .connectors import TransferRequest, sandbox_connector
+from .db import (
+    CapacityOrderRow,
+    ObligationRow,
+    ParticipantRow,
+    ReconciliationRow,
+    RiskLimitRow,
+    SessionLocal,
+    TransferRow,
+    WebhookEndpointRow,
+    WebhookEventRow,
+    init_db,
+)
 from .domain import CapacityOrder, Money, Obligation, ParticipantId, Side
 from .market import clear_capacity_market
 from .netting import multilateral_net
+from .security import AuthContext, require_auth
+from .webhooks import WebhookEnvelope, build_delivery
 
 app = FastAPI(
     title="Liquidity Zero",
-    version="0.1.0",
+    version="0.2.0",
     description="Settlement Capacity Exchange API",
 )
+Auth = Annotated[AuthContext, Depends(require_auth)]
 
 
 class ObligationIn(BaseModel):
@@ -42,9 +56,37 @@ class CapacityOrderIn(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=64)
 
 
-def require_api_key(x_api_key: Annotated[str, Header()]) -> None:
-    if not secrets.compare_digest(x_api_key, settings.api_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
+class ParticipantIn(BaseModel):
+    external_id: str = Field(min_length=1, max_length=128)
+    legal_name: str = Field(min_length=1, max_length=200)
+
+
+class RiskLimitIn(BaseModel):
+    currency: str = Field(min_length=3, max_length=16)
+    credit_limit_minor: int = Field(ge=0)
+    collateral_minor: int = Field(ge=0)
+    max_single_transfer_minor: int = Field(gt=0)
+
+
+class TransferIn(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=64)
+    amount_minor: int = Field(gt=0)
+    currency: str = Field(min_length=3, max_length=16)
+    source_account: str = Field(min_length=1, max_length=160)
+    destination_account: str = Field(min_length=1, max_length=160)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+
+class ReconciliationIn(BaseModel):
+    external_reference: str = Field(min_length=1, max_length=160)
+    currency: str = Field(min_length=3, max_length=16)
+    expected_minor: int = Field(ge=0)
+    observed_minor: int = Field(ge=0)
+
+
+class WebhookEndpointIn(BaseModel):
+    url: AnyHttpUrl
+    secret: str = Field(min_length=16, max_length=256)
 
 
 @app.on_event("startup")
@@ -54,11 +96,61 @@ def startup() -> None:
 
 @app.get("/healthz")
 def health() -> dict[str, str]:
-    return {"status": "ok", "environment": settings.environment}
+    return {"status": "ok", "service": "liquidity-zero", "version": "0.2.0"}
 
 
-@app.post("/v1/obligations", dependencies=[Depends(require_api_key)], status_code=201)
-def create_obligation(payload: ObligationIn) -> dict[str, str]:
+@app.post("/v1/participants", status_code=201)
+def create_participant(payload: ParticipantIn, auth: Auth) -> dict[str, str]:
+    with SessionLocal.begin() as session:
+        existing = session.scalar(
+            select(ParticipantRow)
+            .where(ParticipantRow.organization_id == auth.organization_id)
+            .where(ParticipantRow.external_id == payload.external_id)
+        )
+        if existing is not None:
+            return {"id": existing.id, "external_id": existing.external_id}
+        row = ParticipantRow(
+            organization_id=auth.organization_id,
+            external_id=payload.external_id,
+            legal_name=payload.legal_name,
+        )
+        session.add(row)
+        session.flush()
+        return {"id": row.id, "external_id": row.external_id}
+
+
+@app.put("/v1/participants/{participant_id}/risk-limit")
+def upsert_risk_limit(participant_id: str, payload: RiskLimitIn, auth: Auth) -> dict[str, object]:
+    currency = payload.currency.upper()
+    with SessionLocal.begin() as session:
+        participant = session.get(ParticipantRow, participant_id)
+        if participant is None or participant.organization_id != auth.organization_id:
+            raise HTTPException(status_code=404, detail="participant not found")
+        row = session.scalar(
+            select(RiskLimitRow)
+            .where(RiskLimitRow.organization_id == auth.organization_id)
+            .where(RiskLimitRow.participant_id == participant_id)
+            .where(RiskLimitRow.currency == currency)
+        )
+        if row is None:
+            row = RiskLimitRow(
+                organization_id=auth.organization_id,
+                participant_id=participant_id,
+                currency=currency,
+            )
+            session.add(row)
+        row.credit_limit_minor = payload.credit_limit_minor
+        row.collateral_minor = payload.collateral_minor
+        row.max_single_transfer_minor = payload.max_single_transfer_minor
+    return {
+        "participant_id": participant_id,
+        "currency": currency,
+        "available_capacity_minor": payload.credit_limit_minor + payload.collateral_minor,
+    }
+
+
+@app.post("/v1/obligations", status_code=201)
+def create_obligation(payload: ObligationIn, auth: Auth) -> dict[str, str]:
     obligation_id = f"obl_{payload.idempotency_key}"
     obligation = Obligation(
         id=obligation_id,
@@ -73,6 +165,7 @@ def create_obligation(payload: ObligationIn) -> dict[str, str]:
             session.add(
                 ObligationRow(
                     id=obligation.id,
+                    organization_id=auth.organization_id,
                     payer=str(obligation.payer),
                     payee=str(obligation.payee),
                     currency=obligation.amount.currency,
@@ -80,15 +173,19 @@ def create_obligation(payload: ObligationIn) -> dict[str, str]:
                     due_at=obligation.due_at,
                 )
             )
+        elif existing.organization_id != auth.organization_id:
+            raise HTTPException(status_code=409, detail="idempotency key belongs to another tenant")
     return {"id": obligation.id}
 
 
-@app.get("/v1/netting/{currency}", dependencies=[Depends(require_api_key)])
-def get_netting(currency: str) -> list[dict[str, str | int]]:
+@app.get("/v1/netting/{currency}")
+def get_netting(currency: str, auth: Auth) -> list[dict[str, str | int]]:
     normalized = currency.upper()
     with SessionLocal() as session:
         rows = session.scalars(
-            select(ObligationRow).where(ObligationRow.currency == normalized)
+            select(ObligationRow)
+            .where(ObligationRow.organization_id == auth.organization_id)
+            .where(ObligationRow.currency == normalized)
         ).all()
     obligations = [
         Obligation(
@@ -111,8 +208,8 @@ def get_netting(currency: str) -> list[dict[str, str | int]]:
     ]
 
 
-@app.post("/v1/capacity/orders", dependencies=[Depends(require_api_key)], status_code=201)
-def create_capacity_order(payload: CapacityOrderIn) -> dict[str, str]:
+@app.post("/v1/capacity/orders", status_code=201)
+def create_capacity_order(payload: CapacityOrderIn, auth: Auth) -> dict[str, str]:
     order_id = f"ord_{payload.idempotency_key}"
     order = CapacityOrder(
         id=order_id,
@@ -130,6 +227,7 @@ def create_capacity_order(payload: CapacityOrderIn) -> dict[str, str]:
             session.add(
                 CapacityOrderRow(
                     id=order.id,
+                    organization_id=auth.organization_id,
                     participant=str(order.participant),
                     side=order.side.value,
                     currency=order.currency,
@@ -140,11 +238,13 @@ def create_capacity_order(payload: CapacityOrderIn) -> dict[str, str]:
                     window_end=order.window_end,
                 )
             )
+        elif existing.organization_id != auth.organization_id:
+            raise HTTPException(status_code=409, detail="idempotency key belongs to another tenant")
     return {"id": order.id}
 
 
-@app.post("/v1/capacity/clear/{currency}", dependencies=[Depends(require_api_key)])
-def clear_market(currency: str) -> dict[str, object]:
+@app.post("/v1/capacity/clear/{currency}")
+def clear_market(currency: str, auth: Auth) -> dict[str, object]:
     normalized = currency.upper()
     with SessionLocal.begin() as session:
         rows = session.scalars(
@@ -156,7 +256,7 @@ def clear_market(currency: str) -> dict[str, object]:
         orders = [
             CapacityOrder(
                 id=row.id,
-                participant=ParticipantId(row.participant),
+                participant=ParticipantId(f"{row.organization_id}:{row.participant}"),
                 side=Side(row.side),
                 currency=row.currency,
                 amount_minor=row.remaining_minor,
@@ -177,7 +277,14 @@ def clear_market(currency: str) -> dict[str, object]:
             if amount > row.remaining_minor:
                 raise RuntimeError("market overfill invariant violated")
             row.remaining_minor -= amount
-
+    own_fill_ids = {
+        row.id for row in rows if row.organization_id == auth.organization_id
+    }
+    visible_fills = [
+        fill
+        for fill in fills
+        if fill.buy_order_id in own_fill_ids or fill.sell_order_id in own_fill_ids
+    ]
     return {
         "clearing_id": f"clr_{uuid4().hex}",
         "currency": normalized,
@@ -190,6 +297,159 @@ def clear_market(currency: str) -> dict[str, object]:
                 "buy_order_id": fill.buy_order_id,
                 "sell_order_id": fill.sell_order_id,
             }
-            for fill in fills
+            for fill in visible_fills
         ],
     }
+
+
+@app.post("/v1/transfers", status_code=201)
+def create_transfer(payload: TransferIn, auth: Auth) -> dict[str, object]:
+    currency = payload.currency.upper()
+    with SessionLocal.begin() as session:
+        existing = session.scalar(
+            select(TransferRow)
+            .where(TransferRow.organization_id == auth.organization_id)
+            .where(TransferRow.idempotency_key == payload.idempotency_key)
+        )
+        if existing is not None:
+            return _transfer_dict(existing)
+        participant = session.get(ParticipantRow, payload.participant_id)
+        if participant is None or participant.organization_id != auth.organization_id:
+            raise HTTPException(status_code=404, detail="participant not found")
+        limit = session.scalar(
+            select(RiskLimitRow)
+            .where(RiskLimitRow.organization_id == auth.organization_id)
+            .where(RiskLimitRow.participant_id == payload.participant_id)
+            .where(RiskLimitRow.currency == currency)
+        )
+        if limit is None:
+            raise HTTPException(status_code=409, detail="risk limit not configured")
+        available = limit.credit_limit_minor + limit.collateral_minor
+        if payload.amount_minor > limit.max_single_transfer_minor:
+            raise HTTPException(status_code=409, detail="single transfer limit exceeded")
+        if payload.amount_minor > available:
+            raise HTTPException(status_code=409, detail="available settlement capacity exceeded")
+        result = sandbox_connector.submit(
+            TransferRequest(
+                organization_id=auth.organization_id,
+                idempotency_key=payload.idempotency_key,
+                amount_minor=payload.amount_minor,
+                currency=currency,
+                source_account=payload.source_account,
+                destination_account=payload.destination_account,
+            )
+        )
+        row = TransferRow(
+            organization_id=auth.organization_id,
+            idempotency_key=payload.idempotency_key,
+            connector=sandbox_connector.name,
+            provider_transfer_id=result.provider_transfer_id,
+            state=result.state.value,
+            amount_minor=payload.amount_minor,
+            currency=currency,
+            source_account=payload.source_account,
+            destination_account=payload.destination_account,
+        )
+        session.add(row)
+        session.flush()
+        return _transfer_dict(row)
+
+
+@app.get("/v1/transfers/{transfer_id}")
+def get_transfer(transfer_id: str, auth: Auth) -> dict[str, object]:
+    with SessionLocal() as session:
+        row = session.get(TransferRow, transfer_id)
+        if row is None or row.organization_id != auth.organization_id:
+            raise HTTPException(status_code=404, detail="transfer not found")
+        return _transfer_dict(row)
+
+
+def _transfer_dict(row: TransferRow) -> dict[str, object]:
+    return {
+        "id": row.id,
+        "state": row.state,
+        "connector": row.connector,
+        "provider_transfer_id": row.provider_transfer_id,
+        "amount_minor": row.amount_minor,
+        "currency": row.currency,
+    }
+
+
+@app.post("/v1/reconciliation", status_code=201)
+def reconcile(payload: ReconciliationIn, auth: Auth) -> dict[str, object]:
+    normalized = payload.currency.upper()
+    item_status = "matched" if payload.expected_minor == payload.observed_minor else "mismatch"
+    with SessionLocal.begin() as session:
+        existing = session.scalar(
+            select(ReconciliationRow)
+            .where(ReconciliationRow.organization_id == auth.organization_id)
+            .where(ReconciliationRow.external_reference == payload.external_reference)
+        )
+        if existing is not None:
+            return _reconciliation_dict(existing)
+        row = ReconciliationRow(
+            organization_id=auth.organization_id,
+            external_reference=payload.external_reference,
+            currency=normalized,
+            expected_minor=payload.expected_minor,
+            observed_minor=payload.observed_minor,
+            status=item_status,
+        )
+        session.add(row)
+        session.flush()
+        return _reconciliation_dict(row)
+
+
+def _reconciliation_dict(row: ReconciliationRow) -> dict[str, object]:
+    return {
+        "id": row.id,
+        "external_reference": row.external_reference,
+        "currency": row.currency,
+        "expected_minor": row.expected_minor,
+        "observed_minor": row.observed_minor,
+        "delta_minor": row.observed_minor - row.expected_minor,
+        "status": row.status,
+    }
+
+
+@app.post("/v1/webhook-endpoints", status_code=201)
+def create_webhook_endpoint(payload: WebhookEndpointIn, auth: Auth) -> dict[str, str]:
+    with SessionLocal.begin() as session:
+        row = WebhookEndpointRow(
+            organization_id=auth.organization_id,
+            url=str(payload.url),
+            secret=payload.secret,
+        )
+        session.add(row)
+        session.flush()
+        return {"id": row.id, "url": row.url}
+
+
+@app.post("/v1/webhook-endpoints/{endpoint_id}/test")
+def test_webhook(endpoint_id: str, auth: Auth) -> dict[str, object]:
+    with SessionLocal.begin() as session:
+        endpoint = session.get(WebhookEndpointRow, endpoint_id)
+        if endpoint is None or endpoint.organization_id != auth.organization_id:
+            raise HTTPException(status_code=404, detail="webhook endpoint not found")
+        event = WebhookEventRow(
+            organization_id=auth.organization_id,
+            event_type="integration.test",
+            payload_json=json.dumps({"message": "Liquidity Zero webhook test"}),
+        )
+        session.add(event)
+        session.flush()
+        envelope = WebhookEnvelope(
+            event_id=event.id,
+            event_type=event.event_type,
+            organization_id=auth.organization_id,
+            created_at=event.created_at,
+            data={"message": "Liquidity Zero webhook test"},
+        )
+        body, headers = build_delivery(endpoint.secret, envelope)
+        event.delivery_status = "signed"
+        return {
+            "endpoint": endpoint.url,
+            "body": body.decode("utf-8"),
+            "headers": headers,
+            "status": event.delivery_status,
+        }
