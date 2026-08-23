@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
-from hypothesis import given, strategies as st
 import pytest
+from hypothesis import given, strategies as st
 
 from lz.domain import Money, Obligation, ParticipantId
 from lz.netting import multilateral_net
