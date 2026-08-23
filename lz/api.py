@@ -27,7 +27,7 @@ from .delivery import deliver
 from .domain import CapacityOrder, Money, Obligation, ParticipantId, Side
 from .market import clear_capacity_market
 from .netting import multilateral_net
-from .security import AuthContext, ApiKeyRow, issue_api_key, require_admin, require_auth
+from .security import AuthContext, issue_api_key, require_admin, require_auth
 from .webhooks import WebhookEnvelope, build_delivery
 
 app = FastAPI(title="Liquidity Zero", version="0.2.0", description="Settlement Capacity Exchange API")
