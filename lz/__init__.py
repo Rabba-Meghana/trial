@@ -1,4 +1,6 @@
-"""Liquidity Zero settlement-capacity runtime."""
+"""Liquidity Zero settlement-capacity runtime and SDK."""
 
-__all__ = ["__version__"]
-__version__ = "0.1.0"
+from .client import LiquidityZeroClient
+
+__all__ = ["LiquidityZeroClient", "__version__"]
+__version__ = "0.2.0"
