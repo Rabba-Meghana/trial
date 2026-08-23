@@ -205,6 +205,7 @@ def set_risk_limit(participant_id: str, payload: RiskLimitIn, auth: Auth) -> dic
                 max_single_transfer_minor=0,
             )
             session.add(row)
+            session.flush()
         if payload.credit_limit_minor + payload.collateral_minor < row.reserved_minor:
             raise HTTPException(status_code=409, detail="new limit is below already reserved capacity")
         row.credit_limit_minor = payload.credit_limit_minor
