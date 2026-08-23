@@ -199,6 +199,10 @@ def set_risk_limit(participant_id: str, payload: RiskLimitIn, auth: Auth) -> dic
                 organization_id=auth.organization_id,
                 participant_id=participant_id,
                 currency=currency,
+                credit_limit_minor=0,
+                collateral_minor=0,
+                reserved_minor=0,
+                max_single_transfer_minor=0,
             )
             session.add(row)
         if payload.credit_limit_minor + payload.collateral_minor < row.reserved_minor:
