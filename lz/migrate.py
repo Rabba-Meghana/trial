@@ -5,7 +5,6 @@ from sqlalchemy import text
 from .db import Base, engine
 from .security import ApiKeyRow
 
-
 ALTERATIONS = (
     "ALTER TABLE obligations ADD COLUMN IF NOT EXISTS organization_id VARCHAR(64) NOT NULL DEFAULT 'default'",
     "ALTER TABLE capacity_orders ADD COLUMN IF NOT EXISTS organization_id VARCHAR(64) NOT NULL DEFAULT 'default'",
