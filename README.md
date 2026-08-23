@@ -74,13 +74,7 @@ Install the package from the repository/build artifact:
 pip install .
 ```
 
-Then initialize the client:
-
-```python
-from liquidity_zero import LiquidityZeroClient
-```
-
-When installing this repository directly, the import is:
+Then initialize the client using the `lz` import namespace:
 
 ```python
 from lz import LiquidityZeroClient
