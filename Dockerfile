@@ -15,4 +15,4 @@ RUN pip install --upgrade pip && pip install .
 USER lz
 EXPOSE 8080
 
-CMD ["uvicorn", "lz.api:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
+CMD ["sh", "-c", "python -m lz.migrate && exec uvicorn lz.api:app --host 0.0.0.0 --port 8080 --proxy-headers"]
