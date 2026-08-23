@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import AnyHttpUrl, BaseModel, Field
 from sqlalchemy import select
 
@@ -13,6 +13,7 @@ from .connectors import TransferRequest, sandbox_connector
 from .db import (
     CapacityOrderRow,
     ObligationRow,
+    OrganizationRow,
     ParticipantRow,
     ReconciliationRow,
     RiskLimitRow,
@@ -22,18 +23,33 @@ from .db import (
     WebhookEventRow,
     init_db,
 )
+from .delivery import deliver
 from .domain import CapacityOrder, Money, Obligation, ParticipantId, Side
 from .market import clear_capacity_market
 from .netting import multilateral_net
-from .security import AuthContext, require_auth
+from .security import AuthContext, ApiKeyRow, issue_api_key, require_admin, require_auth
 from .webhooks import WebhookEnvelope, build_delivery
 
-app = FastAPI(
-    title="Liquidity Zero",
-    version="0.2.0",
-    description="Settlement Capacity Exchange API",
-)
-Auth = Annotated[AuthContext, Depends(require_auth)]
+app = FastAPI(title="Liquidity Zero", version="0.2.0", description="Settlement Capacity Exchange API")
+type Auth = Annotated[AuthContext, Depends(require_auth)]
+type Admin = Annotated[None, Depends(require_admin)]
+
+
+class OrganizationIn(BaseModel):
+    id: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=160)
+
+
+class ParticipantIn(BaseModel):
+    external_id: str = Field(min_length=1, max_length=128)
+    legal_name: str = Field(min_length=1, max_length=200)
+
+
+class RiskLimitIn(BaseModel):
+    currency: str = Field(min_length=3, max_length=16)
+    credit_limit_minor: int = Field(ge=0)
+    collateral_minor: int = Field(ge=0)
+    max_single_transfer_minor: int = Field(gt=0)
 
 
 class ObligationIn(BaseModel):
@@ -54,18 +70,6 @@ class CapacityOrderIn(BaseModel):
     window_start: datetime
     window_end: datetime
     idempotency_key: str = Field(min_length=8, max_length=64)
-
-
-class ParticipantIn(BaseModel):
-    external_id: str = Field(min_length=1, max_length=128)
-    legal_name: str = Field(min_length=1, max_length=200)
-
-
-class RiskLimitIn(BaseModel):
-    currency: str = Field(min_length=3, max_length=16)
-    credit_limit_minor: int = Field(ge=0)
-    collateral_minor: int = Field(ge=0)
-    max_single_transfer_minor: int = Field(gt=0)
 
 
 class TransferIn(BaseModel):
@@ -99,6 +103,17 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "liquidity-zero", "version": "0.2.0"}
 
 
+@app.post("/v1/admin/organizations", status_code=201)
+def create_organization(payload: OrganizationIn, _admin: Admin) -> dict[str, str]:
+    with SessionLocal.begin() as session:
+        if session.get(OrganizationRow, payload.id) is not None:
+            raise HTTPException(status_code=409, detail="organization already exists")
+        session.add(OrganizationRow(id=payload.id, name=payload.name))
+        raw_key, key_row = issue_api_key(payload.id)
+        session.add(key_row)
+    return {"organization_id": payload.id, "api_key": raw_key, "key_id": key_row.id}
+
+
 @app.post("/v1/participants", status_code=201)
 def create_participant(payload: ParticipantIn, auth: Auth) -> dict[str, str]:
     with SessionLocal.begin() as session:
@@ -120,7 +135,7 @@ def create_participant(payload: ParticipantIn, auth: Auth) -> dict[str, str]:
 
 
 @app.put("/v1/participants/{participant_id}/risk-limit")
-def upsert_risk_limit(participant_id: str, payload: RiskLimitIn, auth: Auth) -> dict[str, object]:
+def set_risk_limit(participant_id: str, payload: RiskLimitIn, auth: Auth) -> dict[str, object]:
     currency = payload.currency.upper()
     with SessionLocal.begin() as session:
         participant = session.get(ParticipantRow, participant_id)
@@ -243,8 +258,8 @@ def create_capacity_order(payload: CapacityOrderIn, auth: Auth) -> dict[str, str
     return {"id": order.id}
 
 
-@app.post("/v1/capacity/clear/{currency}")
-def clear_market(currency: str, auth: Auth) -> dict[str, object]:
+@app.post("/v1/admin/capacity/clear/{currency}")
+def clear_market(currency: str, _admin: Admin) -> dict[str, object]:
     normalized = currency.upper()
     with SessionLocal.begin() as session:
         rows = session.scalars(
@@ -277,14 +292,6 @@ def clear_market(currency: str, auth: Auth) -> dict[str, object]:
             if amount > row.remaining_minor:
                 raise RuntimeError("market overfill invariant violated")
             row.remaining_minor -= amount
-    own_fill_ids = {
-        row.id for row in rows if row.organization_id == auth.organization_id
-    }
-    visible_fills = [
-        fill
-        for fill in fills
-        if fill.buy_order_id in own_fill_ids or fill.sell_order_id in own_fill_ids
-    ]
     return {
         "clearing_id": f"clr_{uuid4().hex}",
         "currency": normalized,
@@ -297,7 +304,7 @@ def clear_market(currency: str, auth: Auth) -> dict[str, object]:
                 "buy_order_id": fill.buy_order_id,
                 "sell_order_id": fill.sell_order_id,
             }
-            for fill in visible_fills
+            for fill in fills
         ],
     }
 
@@ -324,10 +331,9 @@ def create_transfer(payload: TransferIn, auth: Auth) -> dict[str, object]:
         )
         if limit is None:
             raise HTTPException(status_code=409, detail="risk limit not configured")
-        available = limit.credit_limit_minor + limit.collateral_minor
         if payload.amount_minor > limit.max_single_transfer_minor:
             raise HTTPException(status_code=409, detail="single transfer limit exceeded")
-        if payload.amount_minor > available:
+        if payload.amount_minor > limit.credit_limit_minor + limit.collateral_minor:
             raise HTTPException(status_code=409, detail="available settlement capacity exceeded")
         result = sandbox_connector.submit(
             TransferRequest(
@@ -352,7 +358,9 @@ def create_transfer(payload: TransferIn, auth: Auth) -> dict[str, object]:
         )
         session.add(row)
         session.flush()
-        return _transfer_dict(row)
+        response = _transfer_dict(row)
+    _emit_event(auth.organization_id, "transfer.accepted", response)
+    return response
 
 
 @app.get("/v1/transfers/{transfer_id}")
@@ -397,7 +405,9 @@ def reconcile(payload: ReconciliationIn, auth: Auth) -> dict[str, object]:
         )
         session.add(row)
         session.flush()
-        return _reconciliation_dict(row)
+        response = _reconciliation_dict(row)
+    _emit_event(auth.organization_id, f"reconciliation.{item_status}", response)
+    return response
 
 
 def _reconciliation_dict(row: ReconciliationRow) -> dict[str, object]:
@@ -427,29 +437,45 @@ def create_webhook_endpoint(payload: WebhookEndpointIn, auth: Auth) -> dict[str,
 
 @app.post("/v1/webhook-endpoints/{endpoint_id}/test")
 def test_webhook(endpoint_id: str, auth: Auth) -> dict[str, object]:
-    with SessionLocal.begin() as session:
+    with SessionLocal() as session:
         endpoint = session.get(WebhookEndpointRow, endpoint_id)
         if endpoint is None or endpoint.organization_id != auth.organization_id:
             raise HTTPException(status_code=404, detail="webhook endpoint not found")
+    event_id = _emit_event(auth.organization_id, "integration.test", {"endpoint_id": endpoint_id})
+    return {"event_id": event_id, "status": "dispatched"}
+
+
+def _emit_event(organization_id: str, event_type: str, data: dict[str, object]) -> str:
+    payload_json = json.dumps(data, separators=(",", ":"), sort_keys=True)
+    with SessionLocal.begin() as session:
         event = WebhookEventRow(
-            organization_id=auth.organization_id,
-            event_type="integration.test",
-            payload_json=json.dumps({"message": "Liquidity Zero webhook test"}),
+            organization_id=organization_id,
+            event_type=event_type,
+            payload_json=payload_json,
         )
         session.add(event)
         session.flush()
+        event_id = event.id
+        created_at = event.created_at
+        endpoints = session.scalars(
+            select(WebhookEndpointRow)
+            .where(WebhookEndpointRow.organization_id == organization_id)
+            .where(WebhookEndpointRow.status == "active")
+        ).all()
+    delivered = True
+    for endpoint in endpoints:
         envelope = WebhookEnvelope(
-            event_id=event.id,
-            event_type=event.event_type,
-            organization_id=auth.organization_id,
-            created_at=event.created_at,
-            data={"message": "Liquidity Zero webhook test"},
+            event_id=event_id,
+            event_type=event_type,
+            organization_id=organization_id,
+            created_at=created_at,
+            data=data,
         )
         body, headers = build_delivery(endpoint.secret, envelope)
-        event.delivery_status = "signed"
-        return {
-            "endpoint": endpoint.url,
-            "body": body.decode("utf-8"),
-            "headers": headers,
-            "status": event.delivery_status,
-        }
+        result = deliver(endpoint.url, body, headers)
+        delivered = delivered and 200 <= result.status_code < 300
+    with SessionLocal.begin() as session:
+        stored = session.get(WebhookEventRow, event_id)
+        if stored is not None:
+            stored.delivery_status = "delivered" if delivered else "failed"
+    return event_id
