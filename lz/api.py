@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
 import secrets
+from datetime import datetime
+from typing import Annotated
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -41,7 +42,7 @@ class CapacityOrderIn(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=64)
 
 
-def require_api_key(x_api_key: str = Header()) -> None:
+def require_api_key(x_api_key: Annotated[str, Header()]) -> None:
     if not secrets.compare_digest(x_api_key, settings.api_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
 
