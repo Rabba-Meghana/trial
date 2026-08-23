@@ -36,9 +36,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: pip install -e '.[dev]'
-      - run: ruff check .
-      - run: mypy lz
-      - run: pytest
-      - run: docker build -t liquidity-zero:${{ github.sha }} .
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Install project
+        run: pip install -e '.[dev]'
+      - name: Lint Liquidity Zero
+        run: ruff check lz tests
+      - name: Static type check
+        run: mypy lz
+      - name: Run tests
+        run: pytest tests
+      - name: Build production image
+        run: docker build -t liquidity-zero:${{ github.sha }} .
