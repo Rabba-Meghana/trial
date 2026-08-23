@@ -25,5 +25,16 @@ services:
     ports:
       - "8080:8080"
 
+  outbox-worker:
+    build: .
+    command: ["python", "-m", "lz.worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LZ_ENVIRONMENT: local
+      LZ_API_KEY: local-dev-key-change-me
+      LZ_DATABASE_URL: postgresql+psycopg://lz:lz@postgres:5432/lz
+
 volumes:
   lz_pgdata:
