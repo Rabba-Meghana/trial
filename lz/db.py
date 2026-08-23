@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import BigInteger, DateTime, Integer, String, UniqueConstraint, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .config import settings
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -22,7 +26,7 @@ class ObligationRow(Base):
     currency: Mapped[str] = mapped_column(String(16), index=True)
     amount_minor: Mapped[int] = mapped_column(BigInteger)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class CapacityOrderRow(Base):
@@ -37,7 +41,7 @@ class CapacityOrderRow(Base):
     price_bps: Mapped[int] = mapped_column(Integer)
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class JournalPostingRow(Base):
@@ -51,11 +55,11 @@ class JournalPostingRow(Base):
     currency: Mapped[str] = mapped_column(String(16), index=True)
     amount_minor: Mapped[int] = mapped_column(BigInteger)
     reference: Mapped[str] = mapped_column(String(256))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 engine = create_engine(settings.database_url, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+SessionLocal: sessionmaker[Session] = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def init_db() -> None:
