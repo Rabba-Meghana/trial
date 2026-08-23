@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Annotated
 from uuid import uuid4
@@ -9,6 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import AnyHttpUrl, BaseModel, Field
 from sqlalchemy import select
 
+from .audit import record_audit
 from .connectors import TransferRequest, sandbox_connector
 from .db import (
     CapacityOrderRow,
@@ -20,17 +20,26 @@ from .db import (
     SessionLocal,
     TransferRow,
     WebhookEndpointRow,
-    WebhookEventRow,
     init_db,
 )
-from .delivery import deliver
 from .domain import CapacityOrder, Money, Obligation, ParticipantId, Side
 from .market import clear_capacity_market
 from .netting import multilateral_net
-from .security import AuthContext, issue_api_key, require_admin, require_auth
-from .webhooks import WebhookEnvelope, build_delivery
+from .outbox import deliver_pending, enqueue_event
+from .security import (
+    AuthContext,
+    issue_api_key,
+    require_admin,
+    require_auth,
+    revoke_api_key,
+    rotate_api_key,
+)
 
-app = FastAPI(title="Liquidity Zero", version="0.2.0", description="Settlement Capacity Exchange API")
+app = FastAPI(
+    title="Liquidity Zero",
+    version="0.3.0",
+    description="Settlement Capacity Exchange API",
+)
 type Auth = Annotated[AuthContext, Depends(require_auth)]
 type Admin = Annotated[None, Depends(require_admin)]
 
@@ -100,7 +109,7 @@ def startup() -> None:
 
 @app.get("/healthz")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "liquidity-zero", "version": "0.2.0"}
+    return {"status": "ok", "service": "liquidity-zero", "version": "0.3.0"}
 
 
 @app.post("/v1/admin/organizations", status_code=201)
@@ -111,7 +120,35 @@ def create_organization(payload: OrganizationIn, _admin: Admin) -> dict[str, str
         session.add(OrganizationRow(id=payload.id, name=payload.name))
         raw_key, key_row = issue_api_key(payload.id)
         session.add(key_row)
+        record_audit(
+            session,
+            organization_id=payload.id,
+            actor_key_id="admin",
+            action="organization.created",
+            resource_type="organization",
+            resource_id=payload.id,
+        )
     return {"organization_id": payload.id, "api_key": raw_key, "key_id": key_row.id}
+
+
+@app.post("/v1/api-keys/rotate")
+def rotate_current_key(auth: Auth) -> dict[str, str]:
+    if auth.key_id == "bootstrap":
+        raise HTTPException(status_code=409, detail="bootstrap key cannot be rotated")
+    try:
+        raw_key, key_id = rotate_api_key(auth.organization_id, auth.key_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    enqueue_event(auth.organization_id, "api_key.rotated", {"key_id": key_id})
+    return {"api_key": raw_key, "key_id": key_id}
+
+
+@app.delete("/v1/admin/organizations/{organization_id}/api-keys/{key_id}", status_code=204)
+def revoke_key(organization_id: str, key_id: str, _admin: Admin) -> None:
+    try:
+        revoke_api_key(organization_id, key_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/v1/participants", status_code=201)
@@ -131,6 +168,15 @@ def create_participant(payload: ParticipantIn, auth: Auth) -> dict[str, str]:
         )
         session.add(row)
         session.flush()
+        record_audit(
+            session,
+            organization_id=auth.organization_id,
+            actor_key_id=auth.key_id,
+            action="participant.created",
+            resource_type="participant",
+            resource_id=row.id,
+            payload={"external_id": row.external_id},
+        )
         return {"id": row.id, "external_id": row.external_id}
 
 
@@ -146,6 +192,7 @@ def set_risk_limit(participant_id: str, payload: RiskLimitIn, auth: Auth) -> dic
             .where(RiskLimitRow.organization_id == auth.organization_id)
             .where(RiskLimitRow.participant_id == participant_id)
             .where(RiskLimitRow.currency == currency)
+            .with_for_update()
         )
         if row is None:
             row = RiskLimitRow(
@@ -154,13 +201,26 @@ def set_risk_limit(participant_id: str, payload: RiskLimitIn, auth: Auth) -> dic
                 currency=currency,
             )
             session.add(row)
+        if payload.credit_limit_minor + payload.collateral_minor < row.reserved_minor:
+            raise HTTPException(status_code=409, detail="new limit is below already reserved capacity")
         row.credit_limit_minor = payload.credit_limit_minor
         row.collateral_minor = payload.collateral_minor
         row.max_single_transfer_minor = payload.max_single_transfer_minor
+        record_audit(
+            session,
+            organization_id=auth.organization_id,
+            actor_key_id=auth.key_id,
+            action="risk_limit.updated",
+            resource_type="risk_limit",
+            resource_id=row.id,
+            payload={"currency": currency},
+        )
+        available = row.credit_limit_minor + row.collateral_minor - row.reserved_minor
     return {
         "participant_id": participant_id,
         "currency": currency,
-        "available_capacity_minor": payload.credit_limit_minor + payload.collateral_minor,
+        "available_capacity_minor": available,
+        "reserved_minor": row.reserved_minor,
     }
 
 
@@ -309,9 +369,7 @@ def clear_market(currency: str, _admin: Admin) -> dict[str, object]:
     }
 
 
-@app.post("/v1/transfers", status_code=201)
-def create_transfer(payload: TransferIn, auth: Auth) -> dict[str, object]:
-    currency = payload.currency.upper()
+def _reserve_transfer(payload: TransferIn, auth: Auth, currency: str) -> TransferRow | dict[str, object]:
     with SessionLocal.begin() as session:
         existing = session.scalar(
             select(TransferRow)
@@ -328,13 +386,51 @@ def create_transfer(payload: TransferIn, auth: Auth) -> dict[str, object]:
             .where(RiskLimitRow.organization_id == auth.organization_id)
             .where(RiskLimitRow.participant_id == payload.participant_id)
             .where(RiskLimitRow.currency == currency)
+            .with_for_update()
         )
         if limit is None:
             raise HTTPException(status_code=409, detail="risk limit not configured")
         if payload.amount_minor > limit.max_single_transfer_minor:
             raise HTTPException(status_code=409, detail="single transfer limit exceeded")
-        if payload.amount_minor > limit.credit_limit_minor + limit.collateral_minor:
+        available = limit.credit_limit_minor + limit.collateral_minor - limit.reserved_minor
+        if payload.amount_minor > available:
             raise HTTPException(status_code=409, detail="available settlement capacity exceeded")
+        limit.reserved_minor += payload.amount_minor
+        row = TransferRow(
+            organization_id=auth.organization_id,
+            participant_id=payload.participant_id,
+            idempotency_key=payload.idempotency_key,
+            connector=sandbox_connector.name,
+            provider_transfer_id="",
+            state="reserved",
+            amount_minor=payload.amount_minor,
+            currency=currency,
+            source_account=payload.source_account,
+            destination_account=payload.destination_account,
+            reserved_minor=payload.amount_minor,
+        )
+        session.add(row)
+        session.flush()
+        record_audit(
+            session,
+            organization_id=auth.organization_id,
+            actor_key_id=auth.key_id,
+            action="transfer.reserved",
+            resource_type="transfer",
+            resource_id=row.id,
+            payload={"amount_minor": payload.amount_minor, "currency": currency},
+        )
+        session.expunge(row)
+        return row
+
+
+@app.post("/v1/transfers", status_code=201)
+def create_transfer(payload: TransferIn, auth: Auth) -> dict[str, object]:
+    currency = payload.currency.upper()
+    reserved = _reserve_transfer(payload, auth, currency)
+    if isinstance(reserved, dict):
+        return reserved
+    try:
         result = sandbox_connector.submit(
             TransferRequest(
                 organization_id=auth.organization_id,
@@ -345,21 +441,73 @@ def create_transfer(payload: TransferIn, auth: Auth) -> dict[str, object]:
                 destination_account=payload.destination_account,
             )
         )
-        row = TransferRow(
-            organization_id=auth.organization_id,
-            idempotency_key=payload.idempotency_key,
-            connector=sandbox_connector.name,
-            provider_transfer_id=result.provider_transfer_id,
-            state=result.state.value,
-            amount_minor=payload.amount_minor,
-            currency=currency,
-            source_account=payload.source_account,
-            destination_account=payload.destination_account,
-        )
-        session.add(row)
-        session.flush()
+    except Exception:
+        _fail_and_release(reserved.id, auth.organization_id)
+        enqueue_event(auth.organization_id, "transfer.failed", {"id": reserved.id})
+        raise
+    with SessionLocal.begin() as session:
+        row = session.get(TransferRow, reserved.id)
+        if row is None:
+            raise RuntimeError("reserved transfer disappeared")
+        row.provider_transfer_id = result.provider_transfer_id
+        row.state = result.state.value
         response = _transfer_dict(row)
-    _emit_event(auth.organization_id, "transfer.accepted", response)
+        record_audit(
+            session,
+            organization_id=auth.organization_id,
+            actor_key_id=auth.key_id,
+            action="transfer.submitted",
+            resource_type="transfer",
+            resource_id=row.id,
+            payload={"provider_transfer_id": result.provider_transfer_id},
+        )
+    enqueue_event(auth.organization_id, "transfer.accepted", response)
+    return response
+
+
+def _fail_and_release(transfer_id: str, organization_id: str) -> None:
+    with SessionLocal.begin() as session:
+        row = session.get(TransferRow, transfer_id)
+        if row is None or row.organization_id != organization_id:
+            return
+        if row.reserved_minor > 0:
+            limit = session.scalar(
+                select(RiskLimitRow)
+                .where(RiskLimitRow.organization_id == organization_id)
+                .where(RiskLimitRow.participant_id == row.participant_id)
+                .where(RiskLimitRow.currency == row.currency)
+                .with_for_update()
+            )
+            if limit is not None:
+                limit.reserved_minor = max(0, limit.reserved_minor - row.reserved_minor)
+            row.reserved_minor = 0
+        row.state = "failed"
+
+
+@app.post("/v1/admin/transfers/{transfer_id}/settle")
+def settle_transfer(transfer_id: str, _admin: Admin) -> dict[str, object]:
+    with SessionLocal.begin() as session:
+        row = session.get(TransferRow, transfer_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="transfer not found")
+        if row.state == "settled":
+            return _transfer_dict(row)
+        limit = session.scalar(
+            select(RiskLimitRow)
+            .where(RiskLimitRow.organization_id == row.organization_id)
+            .where(RiskLimitRow.participant_id == row.participant_id)
+            .where(RiskLimitRow.currency == row.currency)
+            .with_for_update()
+        )
+        if limit is None:
+            raise RuntimeError("risk limit missing for reserved transfer")
+        if row.reserved_minor > limit.reserved_minor:
+            raise RuntimeError("reservation accounting invariant violated")
+        limit.reserved_minor -= row.reserved_minor
+        row.reserved_minor = 0
+        row.state = "settled"
+        response = _transfer_dict(row)
+    enqueue_event(row.organization_id, "transfer.settled", response)
     return response
 
 
@@ -380,6 +528,7 @@ def _transfer_dict(row: TransferRow) -> dict[str, object]:
         "provider_transfer_id": row.provider_transfer_id,
         "amount_minor": row.amount_minor,
         "currency": row.currency,
+        "reserved_minor": row.reserved_minor,
     }
 
 
@@ -406,7 +555,15 @@ def reconcile(payload: ReconciliationIn, auth: Auth) -> dict[str, object]:
         session.add(row)
         session.flush()
         response = _reconciliation_dict(row)
-    _emit_event(auth.organization_id, f"reconciliation.{item_status}", response)
+        record_audit(
+            session,
+            organization_id=auth.organization_id,
+            actor_key_id=auth.key_id,
+            action=f"reconciliation.{item_status}",
+            resource_type="reconciliation",
+            resource_id=row.id,
+        )
+    enqueue_event(auth.organization_id, f"reconciliation.{item_status}", response)
     return response
 
 
@@ -432,6 +589,14 @@ def create_webhook_endpoint(payload: WebhookEndpointIn, auth: Auth) -> dict[str,
         )
         session.add(row)
         session.flush()
+        record_audit(
+            session,
+            organization_id=auth.organization_id,
+            actor_key_id=auth.key_id,
+            action="webhook_endpoint.created",
+            resource_type="webhook_endpoint",
+            resource_id=row.id,
+        )
         return {"id": row.id, "url": row.url}
 
 
@@ -441,41 +606,14 @@ def test_webhook(endpoint_id: str, auth: Auth) -> dict[str, object]:
         endpoint = session.get(WebhookEndpointRow, endpoint_id)
         if endpoint is None or endpoint.organization_id != auth.organization_id:
             raise HTTPException(status_code=404, detail="webhook endpoint not found")
-    event_id = _emit_event(auth.organization_id, "integration.test", {"endpoint_id": endpoint_id})
-    return {"event_id": event_id, "status": "dispatched"}
+    event_id = enqueue_event(
+        auth.organization_id,
+        "integration.test",
+        {"endpoint_id": endpoint_id},
+    )
+    return {"event_id": event_id, "status": "queued"}
 
 
-def _emit_event(organization_id: str, event_type: str, data: dict[str, object]) -> str:
-    payload_json = json.dumps(data, separators=(",", ":"), sort_keys=True)
-    with SessionLocal.begin() as session:
-        event = WebhookEventRow(
-            organization_id=organization_id,
-            event_type=event_type,
-            payload_json=payload_json,
-        )
-        session.add(event)
-        session.flush()
-        event_id = event.id
-        created_at = event.created_at
-        endpoints = session.scalars(
-            select(WebhookEndpointRow)
-            .where(WebhookEndpointRow.organization_id == organization_id)
-            .where(WebhookEndpointRow.status == "active")
-        ).all()
-    delivered = True
-    for endpoint in endpoints:
-        envelope = WebhookEnvelope(
-            event_id=event_id,
-            event_type=event_type,
-            organization_id=organization_id,
-            created_at=created_at,
-            data=data,
-        )
-        body, headers = build_delivery(endpoint.secret, envelope)
-        result = deliver(endpoint.url, body, headers)
-        delivered = delivered and 200 <= result.status_code < 300
-    with SessionLocal.begin() as session:
-        stored = session.get(WebhookEventRow, event_id)
-        if stored is not None:
-            stored.delivery_status = "delivered" if delivered else "failed"
-    return event_id
+@app.post("/v1/admin/outbox/deliver")
+def run_outbox(_admin: Admin) -> dict[str, int]:
+    return {"delivered": deliver_pending()}
