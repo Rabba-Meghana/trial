@@ -51,6 +51,27 @@ def issue_api_key(organization_id: str) -> tuple[str, ApiKeyRow]:
     return raw_key, row
 
 
+def rotate_api_key(organization_id: str, current_key_id: str) -> tuple[str, str]:
+    raw_key, new_row = issue_api_key(organization_id)
+    with SessionLocal.begin() as session:
+        current = session.get(ApiKeyRow, current_key_id)
+        if current is None or current.organization_id != organization_id:
+            raise ValueError("API key not found")
+        if current.status != "active":
+            raise ValueError("API key is not active")
+        current.status = "revoked"
+        session.add(new_row)
+    return raw_key, new_row.id
+
+
+def revoke_api_key(organization_id: str, key_id: str) -> None:
+    with SessionLocal.begin() as session:
+        row = session.get(ApiKeyRow, key_id)
+        if row is None or row.organization_id != organization_id:
+            raise ValueError("API key not found")
+        row.status = "revoked"
+
+
 def require_auth(
     x_api_key: Annotated[str, Header()],
     x_lz_organization: Annotated[str | None, Header()] = None,
