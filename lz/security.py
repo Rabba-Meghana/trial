@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Header, HTTPException, status
-from sqlalchemy import BigInteger, DateTime, Integer, String, select
+from sqlalchemy import BigInteger, DateTime, Integer, String, delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -112,6 +112,18 @@ def _enforce_rate_limit(key_id: str, per_minute: int) -> None:
                 detail="API rate limit exceeded",
                 headers={"Retry-After": "60"},
             )
+
+
+def cleanup_rate_limit_buckets(retain_minutes: int = 10) -> int:
+    if retain_minutes < 1:
+        raise ValueError("retain_minutes must be positive")
+    current_window = int(datetime.now(UTC).timestamp()) // 60
+    cutoff = current_window - retain_minutes
+    with SessionLocal.begin() as session:
+        result = session.execute(
+            delete(ApiRateLimitRow).where(ApiRateLimitRow.window_epoch_minute < cutoff)
+        )
+        return int(result.rowcount or 0)
 
 
 def require_auth(
