@@ -8,7 +8,8 @@ def test_control_plane_is_served() -> None:
     response = client.get("/ui")
     assert response.status_code == 200
     assert "Liquidity Zero" in response.text
-    assert "GLOBAL SETTLEMENT CAPACITY EXCHANGE" in response.text
+    assert "GLOBAL SETTLEMENT CAPACITY NETWORK" in response.text
+    assert "Liquidity Zero | Settlement Capacity Network" in response.text
 
 
 def test_root_redirects_to_control_plane() -> None:
