@@ -19,9 +19,9 @@ class Settings(BaseSettings):
         if self.environment.lower() != "production":
             return self
         insecure: list[str] = []
-        if self.api_key == "dev-only-change-me" or len(self.api_key) < 32:
+        if len(self.api_key) < 32:
             insecure.append("LZ_API_KEY")
-        if self.webhook_secret == "dev-webhook-secret-change-me" or len(self.webhook_secret) < 32:
+        if len(self.webhook_secret) < 32:
             insecure.append("LZ_WEBHOOK_SECRET")
         if self.database_url == "postgresql+psycopg://lz:lz@postgres:5432/lz":
             insecure.append("LZ_DATABASE_URL")
