@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="theme-color" content="#070810" />
-  <title>Liquidity Zero · Control Plane</title>
+  <meta name="description" content="Liquidity Zero settlement capacity control plane" />
+  <title>Liquidity Zero | Settlement Capacity Network</title>
   <link rel="stylesheet" href="/ui/assets/styles.css" />
 </head>
 <body>
@@ -16,7 +17,7 @@
     <aside class="rail glass">
       <div class="brand">
         <div class="brand-mark">LZ</div>
-        <div><strong>Liquidity Zero</strong><span>Settlement OS</span></div>
+        <div><strong>Liquidity Zero</strong><span>Settlement Network</span></div>
       </div>
       <nav>
         <button class="nav-item active"><span>◈</span>Overview</button>
@@ -28,26 +29,26 @@
       </nav>
       <div class="rail-foot">
         <div class="status-dot"></div>
-        <div><strong id="health-text">Checking API</strong><span id="health-sub">localhost:8080</span></div>
+        <div><strong id="health-text">Checking API</strong><span id="health-sub">Waiting for backend</span></div>
       </div>
     </aside>
 
     <section class="workspace">
       <header class="topbar">
         <div>
-          <span class="eyebrow">GLOBAL SETTLEMENT CAPACITY EXCHANGE</span>
-          <h1>Command liquidity in real time.</h1>
+          <span class="eyebrow">GLOBAL SETTLEMENT CAPACITY NETWORK</span>
+          <h1>Move liquidity with precision.</h1>
         </div>
         <div class="top-actions">
           <button class="chip" id="mode-chip">SIMULATION</button>
           <button class="round">⌘</button>
-          <button class="avatar">MR</button>
+          <button class="avatar">LZ</button>
         </div>
       </header>
 
       <section class="hero glass">
         <div class="hero-copy">
-          <span class="pill">LIVE CONTROL PLANE</span>
+          <span class="pill">SETTLEMENT CONTROL PLANE</span>
           <h2>$48.2M</h2>
           <p>Total modeled settlement capacity across the active sandbox network.</p>
           <div class="hero-actions">
@@ -56,7 +57,7 @@
           </div>
         </div>
 
-        <div class="core-stage" aria-label="animated settlement-capacity visualization">
+        <div class="core-stage" aria-label="animated settlement capacity visualization">
           <div class="orbit orbit-one"></div>
           <div class="orbit orbit-two"></div>
           <div class="core-glow"></div>
@@ -69,7 +70,7 @@
             <span>Reserved</span><strong>$11.4M</strong><small>23.7% of capacity</small>
           </div>
           <div class="float-card card-b">
-            <span>Netting compression</span><strong>71.3%</strong><small>↓ external liquidity</small>
+            <span>Netting compression</span><strong>71.3%</strong><small>Lower external liquidity</small>
           </div>
           <div class="float-card card-c">
             <span>Market depth</span><strong>$9.6M</strong><small>14 active windows</small>
@@ -81,9 +82,9 @@
       </section>
 
       <section class="metric-grid">
-        <article class="metric glass"><span>External liquidity needed</span><strong>$4.8M</strong><small>↓ 18.4% vs baseline</small></article>
+        <article class="metric glass"><span>External liquidity needed</span><strong>$4.8M</strong><small>18.4% below baseline</small></article>
         <article class="metric glass"><span>Active transfers</span><strong>146</strong><small>18 pending settlement</small></article>
-        <article class="metric glass"><span>Capacity price</span><strong>23 bps</strong><small>USD · 14:00–15:00</small></article>
+        <article class="metric glass"><span>Capacity price</span><strong>23 bps</strong><small>USD | 14:00-15:00</small></article>
         <article class="metric glass"><span>Reconciliation</span><strong>99.7%</strong><small>matched automatically</small></article>
       </section>
 
@@ -98,21 +99,22 @@
 
         <article class="panel glass activity-panel">
           <div class="panel-head"><div><span class="eyebrow">SETTLEMENT FLOW</span><h3>Recent activity</h3></div><span class="pulse"><i></i>Streaming</span></div>
-          <div class="activity"><div class="activity-icon">↗</div><div><strong>Transfer accepted</strong><span>merchant_123 → beneficiary_001</span></div><b>$250K</b><small>now</small></div>
-          <div class="activity"><div class="activity-icon violet">⌁</div><div><strong>Capacity matched</strong><span>USD · 14:00–15:00</span></div><b>$1.2M</b><small>18s</small></div>
+          <div class="activity"><div class="activity-icon">↗</div><div><strong>Transfer accepted</strong><span>merchant_123 to beneficiary_001</span></div><b>$250K</b><small>now</small></div>
+          <div class="activity"><div class="activity-icon violet">⌁</div><div><strong>Capacity matched</strong><span>USD | 14:00-15:00</span></div><b>$1.2M</b><small>18s</small></div>
           <div class="activity"><div class="activity-icon teal">◎</div><div><strong>Netting cycle</strong><span>12 obligations compressed</span></div><b>68%</b><small>42s</small></div>
           <div class="activity"><div class="activity-icon amber">≋</div><div><strong>Reconciliation break</strong><span>delta requires review</span></div><b>-$100</b><small>1m</small></div>
         </article>
       </section>
 
       <section class="developer glass">
-        <div><span class="eyebrow">DEVELOPER MODE</span><h3>Connect this control plane to a tenant</h3><p>Values above are explicitly simulated until you connect an API key. Health and authenticated netting can be queried directly from this screen.</p></div>
+        <div><span class="eyebrow">DEVELOPER CONNECTION</span><h3>Connect this control plane to your Liquidity Zero tenant</h3><p>The displayed values remain simulated until a tenant is connected. Enter the backend API URL when this interface is hosted separately on Vercel.</p></div>
         <form id="connect-form">
+          <input id="api-base" type="url" placeholder="https://api.yourdomain.com" autocomplete="url" />
           <input id="api-key" type="password" placeholder="lz_live_..." autocomplete="off" />
           <input id="org-id" placeholder="organization id" />
           <button class="primary" type="submit">Connect</button>
         </form>
-        <pre id="api-result">Awaiting connection…</pre>
+        <pre id="api-result">Awaiting connection...</pre>
       </section>
     </section>
   </main>
