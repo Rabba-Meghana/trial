@@ -119,11 +119,14 @@ def cleanup_rate_limit_buckets(retain_minutes: int = 10) -> int:
         raise ValueError("retain_minutes must be positive")
     current_window = int(datetime.now(UTC).timestamp()) // 60
     cutoff = current_window - retain_minutes
+    statement = (
+        delete(ApiRateLimitRow)
+        .where(ApiRateLimitRow.window_epoch_minute < cutoff)
+        .returning(ApiRateLimitRow.id)
+    )
     with SessionLocal.begin() as session:
-        result = session.execute(
-            delete(ApiRateLimitRow).where(ApiRateLimitRow.window_epoch_minute < cutoff)
-        )
-        return int(result.rowcount or 0)
+        deleted_ids = session.scalars(statement).all()
+        return len(deleted_ids)
 
 
 def require_auth(
