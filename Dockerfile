@@ -10,9 +10,10 @@ RUN addgroup --system lz && adduser --system --ingroup lz lz
 
 COPY pyproject.toml README.md ./
 COPY lz ./lz
+COPY web ./web
 RUN pip install --upgrade pip && pip install .
 
 USER lz
 EXPOSE 8080
 
-CMD ["sh", "-c", "python -m lz.migrate && exec uvicorn lz.api:app --host 0.0.0.0 --port 8080 --proxy-headers"]
+CMD ["sh", "-c", "python -m lz.migrate && exec uvicorn lz.server:app --host 0.0.0.0 --port 8080 --proxy-headers"]
