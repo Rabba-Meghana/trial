@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#070810" />
+  <title>Liquidity Zero · Control Plane</title>
+  <link rel="stylesheet" href="/ui/assets/styles.css" />
+</head>
+<body>
+  <div class="noise"></div>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <main class="shell">
+    <aside class="rail glass">
+      <div class="brand">
+        <div class="brand-mark">LZ</div>
+        <div><strong>Liquidity Zero</strong><span>Settlement OS</span></div>
+      </div>
+      <nav>
+        <button class="nav-item active"><span>◈</span>Overview</button>
+        <button class="nav-item"><span>↗</span>Transfers</button>
+        <button class="nav-item"><span>⌁</span>Capacity</button>
+        <button class="nav-item"><span>◎</span>Netting</button>
+        <button class="nav-item"><span>◇</span>Risk</button>
+        <button class="nav-item"><span>≋</span>Reconcile</button>
+      </nav>
+      <div class="rail-foot">
+        <div class="status-dot"></div>
+        <div><strong id="health-text">Checking API</strong><span id="health-sub">localhost:8080</span></div>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow">GLOBAL SETTLEMENT CAPACITY EXCHANGE</span>
+          <h1>Command liquidity in real time.</h1>
+        </div>
+        <div class="top-actions">
+          <button class="chip" id="mode-chip">SIMULATION</button>
+          <button class="round">⌘</button>
+          <button class="avatar">MR</button>
+        </div>
+      </header>
+
+      <section class="hero glass">
+        <div class="hero-copy">
+          <span class="pill">LIVE CONTROL PLANE</span>
+          <h2>$48.2M</h2>
+          <p>Total modeled settlement capacity across the active sandbox network.</p>
+          <div class="hero-actions">
+            <button class="primary" id="connect-btn">Connect tenant</button>
+            <button class="secondary" id="pulse-btn">Run market pulse</button>
+          </div>
+        </div>
+
+        <div class="core-stage" aria-label="animated settlement-capacity visualization">
+          <div class="orbit orbit-one"></div>
+          <div class="orbit orbit-two"></div>
+          <div class="core-glow"></div>
+          <div class="core-card">
+            <span>AVAILABLE</span>
+            <strong id="core-available">$36.8M</strong>
+            <small>76.3% deployable</small>
+          </div>
+          <div class="float-card card-a">
+            <span>Reserved</span><strong>$11.4M</strong><small>23.7% of capacity</small>
+          </div>
+          <div class="float-card card-b">
+            <span>Netting compression</span><strong>71.3%</strong><small>↓ external liquidity</small>
+          </div>
+          <div class="float-card card-c">
+            <span>Market depth</span><strong>$9.6M</strong><small>14 active windows</small>
+          </div>
+          <div class="float-card card-d">
+            <span>Risk utilization</span><strong>38%</strong><small>within policy</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="metric-grid">
+        <article class="metric glass"><span>External liquidity needed</span><strong>$4.8M</strong><small>↓ 18.4% vs baseline</small></article>
+        <article class="metric glass"><span>Active transfers</span><strong>146</strong><small>18 pending settlement</small></article>
+        <article class="metric glass"><span>Capacity price</span><strong>23 bps</strong><small>USD · 14:00–15:00</small></article>
+        <article class="metric glass"><span>Reconciliation</span><strong>99.7%</strong><small>matched automatically</small></article>
+      </section>
+
+      <section class="lower-grid">
+        <article class="panel glass market-panel">
+          <div class="panel-head"><div><span class="eyebrow">CAPACITY MARKET</span><h3>Temporal liquidity book</h3></div><button class="ghost">View market</button></div>
+          <div class="market-row"><span class="currency">USD</span><div class="bar"><i style="width:78%"></i></div><strong>23 bps</strong><small>$4.2M depth</small></div>
+          <div class="market-row"><span class="currency">EUR</span><div class="bar"><i style="width:61%"></i></div><strong>17 bps</strong><small>€2.8M depth</small></div>
+          <div class="market-row"><span class="currency">MXN</span><div class="bar"><i style="width:88%"></i></div><strong>41 bps</strong><small>MX$38M depth</small></div>
+          <div class="market-row"><span class="currency">GBP</span><div class="bar"><i style="width:49%"></i></div><strong>19 bps</strong><small>£1.6M depth</small></div>
+        </article>
+
+        <article class="panel glass activity-panel">
+          <div class="panel-head"><div><span class="eyebrow">SETTLEMENT FLOW</span><h3>Recent activity</h3></div><span class="pulse"><i></i>Streaming</span></div>
+          <div class="activity"><div class="activity-icon">↗</div><div><strong>Transfer accepted</strong><span>merchant_123 → beneficiary_001</span></div><b>$250K</b><small>now</small></div>
+          <div class="activity"><div class="activity-icon violet">⌁</div><div><strong>Capacity matched</strong><span>USD · 14:00–15:00</span></div><b>$1.2M</b><small>18s</small></div>
+          <div class="activity"><div class="activity-icon teal">◎</div><div><strong>Netting cycle</strong><span>12 obligations compressed</span></div><b>68%</b><small>42s</small></div>
+          <div class="activity"><div class="activity-icon amber">≋</div><div><strong>Reconciliation break</strong><span>delta requires review</span></div><b>-$100</b><small>1m</small></div>
+        </article>
+      </section>
+
+      <section class="developer glass">
+        <div><span class="eyebrow">DEVELOPER MODE</span><h3>Connect this control plane to a tenant</h3><p>Values above are explicitly simulated until you connect an API key. Health and authenticated netting can be queried directly from this screen.</p></div>
+        <form id="connect-form">
+          <input id="api-key" type="password" placeholder="lz_live_..." autocomplete="off" />
+          <input id="org-id" placeholder="organization id" />
+          <button class="primary" type="submit">Connect</button>
+        </form>
+        <pre id="api-result">Awaiting connection…</pre>
+      </section>
+    </section>
+  </main>
+
+  <script src="/ui/assets/app.js"></script>
+</body>
+</html>
