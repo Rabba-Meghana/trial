@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: lz
+      POSTGRES_USER: lz
+      POSTGRES_PASSWORD: lz
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lz -d lz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - lz_pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LZ_ENVIRONMENT: local
+      LZ_API_KEY: local-dev-key-change-me
+      LZ_DATABASE_URL: postgresql+psycopg://lz:lz@postgres:5432/lz
+    ports:
+      - "8080:8080"
+
+  outbox-worker:
+    build: .
+    command: ["python", "-m", "lz.worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LZ_ENVIRONMENT: local
+      LZ_API_KEY: local-dev-key-change-me
+      LZ_DATABASE_URL: postgresql+psycopg://lz:lz@postgres:5432/lz
+
+volumes:
+  lz_pgdata:

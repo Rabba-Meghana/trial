@@ -1,0 +1,118 @@
+name: ci
+
+on:
+  push:
+    branches: [main, liquidity-zero-launch]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Build and install package
+        run: pip install -e '.[dev]'
+      - name: Compile Python sources
+        run: python -m compileall -q lz tests
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - name: Ruff
+        run: ruff check lz tests
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - name: Mypy strict
+        run: mypy lz
+
+  security-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - name: Install project and security scanners
+        run: pip install -e . pip-audit bandit
+      - name: Audit Python dependencies
+        run: pip-audit
+      - name: Bandit static security scan
+        run: bandit -q -r lz
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: lz
+          POSTGRES_USER: lz
+          POSTGRES_PASSWORD: lz
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lz -d lz"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      LZ_DATABASE_URL: postgresql+psycopg://lz:lz@localhost:5432/lz
+      LZ_API_KEY: ci-test-key
+      LZ_ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - name: Pytest
+        run: pytest tests
+
+  typescript-sdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDK dependencies
+        run: npm install
+      - name: Audit SDK dependencies
+        run: npm audit --audit-level=high
+      - name: Typecheck SDK
+        run: npm run typecheck
+      - name: Build SDK
+        run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build -t liquidity-zero:${{ github.sha }} .
