@@ -49,6 +49,21 @@ jobs:
       - name: Mypy strict
         run: mypy lz
 
+  security-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - name: Install project and security scanners
+        run: pip install -e . pip-audit bandit
+      - name: Audit Python dependencies
+        run: pip-audit
+      - name: Bandit static security scan
+        run: bandit -q -r lz
+
   test:
     runs-on: ubuntu-latest
     services:
@@ -88,6 +103,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install SDK dependencies
         run: npm install
+      - name: Audit SDK dependencies
+        run: npm audit --audit-level=high
       - name: Typecheck SDK
         run: npm run typecheck
       - name: Build SDK
